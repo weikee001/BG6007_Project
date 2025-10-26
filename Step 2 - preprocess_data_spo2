@@ -1,0 +1,160 @@
+# preprocess_data_spo2.py
+# Library to create .h5 tensors from spo2 data in csv format
+
+# Imports --------------------------------------------
+
+import numpy as np
+import torch
+import h5py
+import pandas as pd
+import os
+
+# to track files in respective folder to make sure they are present
+print(os.listdir('data/data_csv/Left'))
+print(os.listdir('data/data_csv/Right'))
+
+# Presets --------------------------------------------
+
+PATIENT_NUMS = ['100001', '100002', '100003', '100004', '100005', '100006','100007']
+
+PROCESSED_DATA_DIR = 'data/data_csv'
+FEATS = ["left-r","left-g","left-b","right-r","right-g","right-b"]
+
+GROUNDTRUTH_DATA = 'data/gt/'
+GT_ROWS = ['sp02_1', 'sp02_2', 'sp02_3', 'sp02_4', 'sp02_5']
+
+# Functions --------------------------------------------
+
+"""
+Load patient data functions
+"""
+# Assumes 0,1,2 feats are for left hand and 3,4,5 feats are for right hand
+def load_data_for_patient(pnum):
+    # Read data from Left
+    fpath_left = os.path.join(PROCESSED_DATA_DIR, 'Left', pnum + '.csv')
+    data_left = torch.tensor(np.genfromtxt(fpath_left, delimiter=',',skip_header=1).transpose())
+
+    # read data from Right
+    fpath_right = os.path.join(PROCESSED_DATA_DIR, 'Right', pnum + '.csv')
+    data_right = torch.tensor(np.genfromtxt(fpath_right, delimiter=',',skip_header=1).transpose())
+
+    # Stack uneven tensors into single tensor
+    data = torch.zeros((6,max(data_left.shape[1], data_right.shape[1])))
+    data[:3,:data_left.shape[1]] = data_left
+    data[3:,:data_right.shape[1]] = data_right
+
+    return data
+
+import matplotlib.pyplot as plt
+def load_data():
+    # Load processed input data
+    all_patient_data = [load_data_for_patient(pnum) for pnum in PATIENT_NUMS]
+    max_len = max([pdata.shape[1] for pdata in all_patient_data])
+    dataset = torch.zeros((len(all_patient_data), len(FEATS), max_len))
+    for i, pdata in enumerate(all_patient_data):
+        dataset[i, :, :pdata.shape[1]] = pdata.unsqueeze(0)
+
+    return dataset
+
+"""
+Load groundtruth data functions
+"""
+def load_groundtruth_for_patient(pnum):
+    fpath = os.path.join(GROUNDTRUTH_DATA, pnum + '.csv')
+
+    # --- Check if file exists first ---
+    if not os.path.exists(fpath):
+        print(f"⚠️ Warning: Ground truth file not found for patient {pnum}. Filling with zeros.")
+        dummy_len = 1000  # adjust based on your dataset
+        return torch.zeros((5, dummy_len))
+
+    # --- Read file safely ---
+    datContent = [i.strip().split(',') for i in open(fpath).readlines()]
+    rows = []
+
+    for row in datContent[1:]:
+        if len(row) < 6:
+            continue
+        try:
+            sp02_vals = [float(x) for x in row[1:6]]
+            rows.append(sp02_vals)
+        except ValueError:
+            continue
+
+    # --- Handle empty or corrupt files ---
+    if len(rows) == 0:
+        print(f"⚠️ Warning: Ground truth file {pnum}.csv is empty or invalid. Filling with zeros.")
+        return torch.zeros((5, 1000))
+
+    data = torch.tensor(rows).transpose(0, 1)
+    return data
+
+
+
+def load_groundtruth():
+    all_patient_gt = [ load_groundtruth_for_patient(pnum) for pnum in PATIENT_NUMS]
+    max_len = max([gtdata.shape[1] for gtdata in all_patient_gt])
+    gt_data = torch.zeros((len(all_patient_gt), len(GT_ROWS), max_len))
+    for i, gtdata in enumerate(all_patient_gt):
+        gt_data[i, :, :gtdata.shape[1]] = gtdata.unsqueeze(0)
+    return gt_data
+
+def build_data_and_groundtruth():
+    FPS = 30
+
+    #Load dataset and groundtruth
+    dataset = load_data()            
+    groundtruth = load_groundtruth() 
+
+    # Make lengths consistent
+    clip_to = min(groundtruth.shape[2]*FPS, dataset.shape[2])
+    groundtruth = groundtruth.index_select(2, torch.arange(0, clip_to//30, dtype=torch.int64))
+    dataset = dataset.index_select(2, torch.arange(0, clip_to, dtype=torch.int64))
+
+    # Ensure the output directory exists
+    output_dir = 'data/data_preprocessed'  # relative path from script
+    os.makedirs(output_dir, exist_ok=True) # create folder if it doesn't exist
+    h5_path = os.path.join(output_dir, 'all_uw_data.h5')
+
+    #  Write data to HDF5 file
+    with h5py.File(h5_path, 'w') as f:
+        dset = f.create_dataset("dataset", tuple(dataset.shape), dtype='f')
+        dset[:] = dataset
+        dset.attrs['features_key'] = FEATS
+
+        gt = f.create_dataset("groundtruth", tuple(groundtruth.shape), dtype='f')
+        gt[:] = groundtruth
+        gt.attrs['gt_keys'] = GT_ROWS
+
+    print(f"HDF5 file successfully created at: {h5_path}")
+
+    # Now save the .h5 file
+    with h5py.File('..//data//data_preprocessed//all_uw_data.h5', 'w') as f:
+        dset = f.create_dataset("dataset", tuple(dataset.shape), dtype='f')
+        dset[:] = dataset
+        dset.attrs['features_key'] = FEATS
+
+        gt = f.create_dataset("groundtruth", tuple(groundtruth.shape), dtype='f')
+        gt[:] = groundtruth
+        gt.attrs['gt_keys'] = GT_ROWS
+    
+
+def load_data_and_groundtruth():
+    build_data_and_groundtruth()
+    with h5py.File('..//data//data_preprocessed//all_uw_data.h5', 'r') as f:
+        data = f['dataset'][:]
+        gt = f['groundtruth'][:]
+    return data, gt
+
+
+# Code to run --------------------------------------------
+
+if __name__ == '__main__':
+    data, gt = load_data_and_groundtruth()
+
+import h5py
+
+with h5py.File('../data/data_preprocessed/all_uw_data.h5', 'r') as f:
+    print(f.keys())  # dataset, groundtruth
+    print(f['dataset'].shape)
+    print(f['groundtruth'].shape)

@@ -1,0 +1,579 @@
+import numpy as np
+import torch
+import h5py
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+# Load the preprocessed data and view the shapes
+PATH = '../data/data_preprocessed/'
+def load_data_and_groundtruth():
+    with h5py.File(os.path.join(PATH,'all_uw_data.h5'), 'r') as f:
+        data = f['dataset'][:]
+        groundtruth = f['groundtruth'][:]
+    return data, groundtruth
+
+data, groundtruth = load_data_and_groundtruth()
+data.shape, groundtruth.shape
+
+# Plot the red, green, and blue chanel in the time range. Choose either left or right hand.
+def plot_RGB(data, pid=0, left=True, sec_from=0, sec_to=1000):
+    title = "pid" + str(pid+1)
+    X = np.arange(sec_from, sec_to, 1/30)
+    if left:
+        plt.plot(X, data[pid, 0, sec_from*30:sec_to*30], label="red", color="red")
+        plt.plot(X, data[pid, 1, sec_from*30:sec_to*30], label="green", color="green")
+        plt.plot(X, data[pid, 2, sec_from*30:sec_to*30], label="blue", color="blue")
+        title += " Left"
+    else:
+        plt.plot(X, data[pid, 3, sec_from*30:sec_to*30], label="red", color="red")
+        plt.plot(X, data[pid, 4, sec_from*30:sec_to*30], label="green", color="green")
+        plt.plot(X, data[pid, 5, sec_from*30:sec_to*30], label="blue", color="blue")
+        title += " Right"
+    plt.title("UW RGB Plot for " + title)
+    plt.legend()
+    plt.xlabel("Seconds")
+#     plt.ylim(0, 250)
+    plt.ylabel("Received Lumen Value")
+    plt.show()
+    
+plot_RGB(data, pid=0, left=False, sec_from=0, sec_to=1000)
+plot_RGB(data, pid=0, left=False, sec_from=500, sec_to=520)
+
+# Make a list of data points for visualizing or training
+def make_temp_data(data_uw, groundtruth_uw, data_idx=[], gt_ind = 3):
+    # Select 0th sample, right hand
+    res_data_list = []
+    res_gt_list = []
+    for pid, row in enumerate(data_idx):
+        if row[0] == 1:
+            res_data_list.append(data_uw[pid][:3,:])
+            res_gt_list.append(groundtruth_uw[pid][gt_ind,:])
+        if row[1] == 1:
+            res_data_list.append(data_uw[pid][3:,:]) 
+            res_gt_list.append(groundtruth_uw[pid][gt_ind, :])
+
+    results_data_list = []
+    results_gt_list = []
+    fps_list = []
+    for i in range(len(res_gt_list)):
+        # find zeros
+        zeros_data = np.where(res_data_list[i][0] == 0)[0]
+        zeros_gt = np.where(res_gt_list[i] == 0)[0]
+
+        if len(zeros_data) > 0:
+            result_data_i = res_data_list[i][:, :int(zeros_data[0])]
+        else:
+            result_data_i = res_data_list[i]
+        if len(zeros_gt) > 0:
+            result_gt_i = res_gt_list[i][:int(zeros_gt[0])]
+        else:
+            result_gt_i = res_gt_list[i]
+
+        # Calculate shorter and clip
+        fps = 30
+        clip_len = min(result_gt_i.shape[0], result_data_i.shape[1] // fps)
+        result_data_i = result_data_i[:, :clip_len*fps]
+        result_gt_i = result_gt_i[:clip_len]
+
+        results_gt_list.append(result_gt_i)
+        results_data_list.append(result_data_i)
+        fps_list.append(fps)
+
+    return {"data": results_data_list, "gt": results_gt_list, "fps": fps_list}
+
+# Plot a historgram of the data distribution
+def hist_UW():
+    all_data_idx = np.ones((6,2))
+    all_seq = make_temp_data(data, groundtruth, gt_ind=3, data_idx=all_data_idx)
+    gtdatapoints = []
+    for seq in all_seq["gt"]:
+        gtdatapoints.extend(seq)
+    gtdatapoints = np.array(gtdatapoints)
+    print('UW: mean=%f, std=%f' % \
+          (np.mean(gtdatapoints),np.std(gtdatapoints)))
+    plt.figure(figsize=(11,3),dpi=300)
+    plt.hist(gtdatapoints,bins=10, )
+    ax = plt.gca()
+
+    ax.set_ylim(top=8000)
+
+    locs = ax.yaxis.get_ticklocs()
+    labs = ax.yaxis.get_ticklabels()
+    # print([lab.get_text() for lab in ax.yaxis.get_ticklabels()])
+    new_locs = []
+    new_labs = []
+    for i, (loc, lab) in enumerate(list(zip(locs, labs))):
+        if (i) % 2 == 0:
+            # if i == 0:
+            #     continue
+            new_locs.append(loc)
+            new_labs.append(lab)
+            plt.axhline(y=loc, color="grey", alpha=0.2)
+
+    ax.set_yticks(new_locs)
+    ax.set_yticklabels(["0", "2000", "4000", "6000", "8000"], fontsize=16)
+
+    # ax.set_xticks(ax.get_xticks(), fontsize=16)
+    plt.setp(ax.get_xticklabels(), fontsize=16)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+
+    ax.set_ylabel("Varied FiO2 Levels", fontsize=14)
+    plt.tight_layout()
+
+hist_UW()
+
+from pathlib import Path
+
+# Path to metadata.csv inside data_csv
+metadata_path = Path('data/gt/metadata.csv')
+
+# Check if file exists first
+if not metadata_path.exists():
+    raise FileNotFoundError(f"{metadata_path} not found. Please check the path.")
+
+# Preview first 20 lines
+with open(metadata_path, 'r') as f:
+    for i, line in enumerate(f):
+        print(i, line.strip())
+        if i >= 19:  # 0-indexed, so 0–19 = 20 lines
+            break
+
+def load_metadata(metapath):
+    """
+    Load metadata CSV file safely.
+    
+    Args:
+        metapath (str or Path): Path to the metadata CSV file.
+    
+    Returns:
+        pd.DataFrame: Loaded metadata.
+    """
+    metapath = Path(metapath)  # Ensure it's a Path object
+    if not metapath.is_file():
+        raise FileNotFoundError(f"Metadata file not found: {metapath.resolve()}")
+    
+    meta_df = pd.read_csv(metapath)
+    return meta_df
+
+# Path to metadata.csv in your 'data/gt' folder
+metadata_path = Path('data/gt/metadata.csv')
+
+# Load and preview
+meta_df = load_metadata(metadata_path)
+print(meta_df.head())
+
+#Training 
+import math, random, warnings, os
+import numpy as np
+import pandas as pd
+import torch, torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import r2_score, roc_curve, auc, confusion_matrix
+import matplotlib.pyplot as plt
+
+warnings.filterwarnings("ignore")
+np.random.seed(42); random.seed(42); torch.manual_seed(42)
+
+# ---- Config (CPU friendly) ----
+SPO2_INDEX   = 3
+FPS          = 30
+WIN_SEC      = 3
+WIN_FRAMES   = WIN_SEC * FPS
+BATCH_SIZE   = 64
+EPOCHS       = 90    # set 120 for max fidelity
+LR           = 1e-3
+WEIGHT_DECAY = 1e-4
+DEVICE       = "cpu"
+OUTDIR       = "./uw_spo2_results"
+os.makedirs(OUTDIR, exist_ok=True)
+
+# ---- Helpers ----
+def _trim_valid(rgb3):  # rgb3: [3, T]
+    zeros = np.where(rgb3[0] == 0)[0]
+    T_cam = zeros[0] if len(zeros) > 0 else rgb3.shape[1]
+    return rgb3[:, :T_cam]
+
+def extract_hand_series(pid, hand):
+    """hand: 0=Left (0..2), 1=Right (3..5)"""
+    if hand == 0:
+        rgb = data[pid, 0:3, :]
+    else:
+        rgb = data[pid, 3:6, :]
+    rgb = _trim_valid(rgb.astype(np.float32))
+    gt_spo2 = np.asarray(groundtruth[pid][SPO2_INDEX], dtype=np.float32)
+    zeros_gt = np.where(gt_spo2 == 0)[0]
+    T_gt = zeros_gt[0] if len(zeros_gt) > 0 else gt_spo2.shape[0]
+    gt_spo2 = gt_spo2[:T_gt]
+    return rgb, gt_spo2
+
+def build_windows_feature(rgb, gt_spo2, fps=FPS, win_frames=WIN_FRAMES):
+    """
+    3s centered windows at each GT second.
+    Feature per channel: AC/DC for R,G,B  -> shape [N,3,1,90]
+    """
+    T_frames = rgb.shape[1]
+    T_gt = gt_spo2.shape[0]
+    X_list, y_list, idx_list = [], [], []
+    for s in range(T_gt):
+        c = s*fps + fps//2
+        st = c - win_frames//2
+        en = st + win_frames
+        if st < 0 or en > T_frames:
+            continue
+        w = rgb[:, st:en].astype(np.float32)  # [3,90]
+        if not np.isfinite(w).all():
+            continue
+        dc = w.mean(axis=1, keepdims=True)    # [3,1]
+        ac = w - dc                            # [3,90]
+        acdc = ac / (dc + 1e-7)               # [3,90]
+        X_list.append(acdc[:, None, :])       # [3,1,90]
+        y_list.append(gt_spo2[s])
+        idx_list.append(s)
+
+    if not X_list:
+        return np.empty((0,3,1,win_frames), np.float32), np.empty((0,), np.float32), []
+    X = np.stack(X_list, axis=0).astype(np.float32)  # [N,3,1,90]
+    y = np.array(y_list, dtype=np.float32)
+    return X, y, idx_list
+
+def make_hand_dataset(pid, hand):
+    rgb, gt = extract_hand_series(pid, hand)
+    X, y, idx = build_windows_feature(rgb, gt)
+    keep = y >= 70
+    X = X[keep]; y = y[keep]; idx = np.array(idx)[keep].tolist()
+    return X, y, idx
+
+def list_paper_hands():
+    return [(pid, h) for pid in range(0,6) for h in (0,1)]
+
+def subject7_hands():
+    return [(6,0),(6,1)]
+
+# ---- Dataset ----
+class WindowDataset(Dataset):
+    def __init__(self, X, y, instance_norm=True):
+        """
+        X: [N,3,1,90]; y: [N]
+        Instance normalization per-window, per-channel along time (last dim).
+        """
+        self.X = X.copy()
+        self.y = y.copy() if y is not None else None
+        if instance_norm and self.X.shape[0] > 0:
+            # compute per-window, per-channel mean/std over time
+            x = self.X[:,:,0,:]                                  # [N,3,90]
+            mu = x.mean(axis=2, keepdims=True)                   # [N,3,1]
+            sd = x.std(axis=2, keepdims=True) + 1e-7            # [N,3,1]
+            self.X[:,:,0,:] = (x - mu) / sd
+
+    def __len__(self): return self.X.shape[0]
+    def __getitem__(self, i):
+        Xi = torch.from_numpy(self.X[i])
+        yi = torch.tensor(self.y[i]) if self.y is not None else torch.tensor(0.0)
+        return Xi, yi
+
+# ---- Model (3-channel 1D conv along time via Conv2d with height=1) ----
+class PaperCNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=(1,5), padding=(0,2))
+        self.conv2 = nn.Conv2d(16,32, kernel_size=(1,5), padding=(0,2))
+        self.conv3 = nn.Conv2d(32,64, kernel_size=(1,3), padding=(0,1))
+        self.pool  = nn.MaxPool2d(kernel_size=(1,2))
+        self.relu  = nn.ReLU(inplace=True)
+        with torch.no_grad():
+            x = torch.zeros(1,3,1,90)
+            x = self.pool(self.relu(self.conv1(x)))  # [1,16,1,45]
+            x = self.pool(self.relu(self.conv2(x)))  # [1,32,1,22]
+            x = self.relu(self.conv3(x))             # [1,64,1,22]
+            flat = x.view(1,-1).shape[1]
+        self.fc1 = nn.Linear(flat, 128)
+        self.fc2 = nn.Linear(128, 1)
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = self.relu(self.conv3(x))
+        x = torch.flatten(x, 1)
+        x = self.relu(self.fc1(x))
+        return self.fc2(x).squeeze(1)
+
+# ---- Train/Eval utils ----
+def train_one_epoch(model, loader, opt, crit):
+    model.train(); total=0; n=0
+    for Xb, yb in loader:
+        Xb = Xb.to(DEVICE); yb = yb.to(DEVICE).float()
+        opt.zero_grad(); pred = model(Xb); loss = crit(pred, yb)
+        loss.backward(); opt.step()
+        total += loss.item()*Xb.size(0); n += Xb.size(0)
+    return total/max(n,1)
+
+def predict(model, loader):
+    model.eval(); P=[]; G=[]
+    with torch.no_grad():
+        for Xb, yb in loader:
+            Xb = Xb.to(DEVICE)
+            pb = model(Xb).cpu().numpy()
+            P.append(pb); G.append(yb.numpy())
+    if not P: return np.array([]), np.array([])
+    return np.concatenate(P), np.concatenate(G)
+
+def predict_numpy_windows_mc(model, X_np, batch_size=256):
+    """
+    Run model on raw NumPy windows [N,3,1,90] using SAME instance norm
+    as training (per-window, per-channel).
+    """
+    if X_np.size == 0:
+        return np.array([])
+    X = X_np.copy()
+    x = X[:,:,0,:]                                   # [N,3,90]
+    mu = x.mean(axis=2, keepdims=True)               # [N,3,1]
+    sd = x.std(axis=2, keepdims=True) + 1e-7
+    X[:,:,0,:] = (x - mu) / sd
+    preds = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, X.shape[0], batch_size):
+            xb = torch.from_numpy(X[i:i+batch_size]).to(DEVICE)
+            pb = model(xb).cpu().numpy()
+            preds.append(pb)
+    return np.concatenate(preds) if preds else np.array([])
+
+def metrics(y_true, y_pred):
+    y_true = np.asarray(y_true); y_pred = np.asarray(y_pred)
+    diff = y_pred - y_true
+    mae = float(np.mean(np.abs(diff)))
+    arms = float(np.sqrt(np.mean(diff**2)))
+    r2  = float(r2_score(y_true, y_pred)) if len(np.unique(y_true))>1 else 0.0
+    mu  = float(np.mean(diff))
+    sd  = float(np.std(diff, ddof=0))
+    lo, hi = mu - 1.96*sd, mu + 1.96*sd
+    return mae, arms, r2, mu, lo, hi
+
+def classify_summary(y, p, thresholds=[92,90,88]):
+    rows=[]
+    for thr in thresholds:
+        yb = (y < thr).astype(int)
+        fpr, tpr, _ = roc_curve(yb, -p)  # lower=positive
+        AUC = auc(fpr, tpr)
+        tn, fp, fn, tp = confusion_matrix(yb, (p < thr).astype(int), labels=[0,1]).ravel()
+        sens = tp/(tp+fn) if (tp+fn)>0 else 0.0
+        spec = tn/(tn+fp) if (tn+fp)>0 else 0.0
+        rows.append(dict(threshold=thr, sensitivity=sens, specificity=spec, fpr=fpr, tpr=tpr, auc=AUC))
+    return rows
+
+# ---- Build all hands (subjects 1..6) ----
+paper_hands = list_paper_hands()
+hand_data = []
+for pid, hand in paper_hands:
+    X, y, idx = make_hand_dataset(pid, hand)
+    hand_data.append(dict(pid=pid, hand=hand, X=X, y=y, idx=idx))
+
+# ---- LOOCV across hands ----
+results_table = []
+all_preds = {}  # (pid,hand) -> dict(gt, pred, idx)
+
+for fold, (t_pid, t_hand) in enumerate(paper_hands, start=1):
+    train_entries = [d for d in hand_data if not (d['pid']==t_pid and d['hand']==t_hand)]
+    val_entry = max(train_entries, key=lambda d: d['X'].shape[0])
+    train_entries = [d for d in train_entries if d is not val_entry]
+
+    X_tr = np.concatenate([d['X'] for d in train_entries if d['X'].shape[0]>0], axis=0)
+    y_tr = np.concatenate([d['y'] for d in train_entries if d['y'].shape[0]>0], axis=0)
+    X_va = val_entry['X']; y_va = val_entry['y']
+
+    # Train/val on hypoxemia only (<94)
+    sel_tr = y_tr < 94; sel_va = y_va < 94
+    X_tr = X_tr[sel_tr]; y_tr = y_tr[sel_tr]
+    X_va = X_va[sel_va]; y_va = y_va[sel_va]
+
+    ds_tr = WindowDataset(X_tr, y_tr, instance_norm=True)
+    ds_va = WindowDataset(X_va, y_va, instance_norm=True)
+
+    test_entry = [d for d in hand_data if (d['pid']==t_pid and d['hand']==t_hand)][0]
+    X_te = test_entry['X']; y_te = test_entry['y']; idx_te = test_entry['idx']
+    ds_te = WindowDataset(X_te, y_te, instance_norm=True)
+
+    dl_tr = DataLoader(ds_tr, batch_size=BATCH_SIZE, shuffle=True)
+    dl_va = DataLoader(ds_va, batch_size=BATCH_SIZE, shuffle=False)
+    dl_te = DataLoader(ds_te, batch_size=BATCH_SIZE, shuffle=False)
+
+    model = PaperCNN().to(DEVICE)
+    opt = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    crit = nn.MSELoss()
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[80], gamma=0.1)
+
+    best_state = None; best_val = float("inf")
+    for ep in range(1, EPOCHS+1):
+        _ = train_one_epoch(model, dl_tr, opt, crit)
+        pv, gv = predict(model, dl_va)
+        if gv.size>0:
+            v_mae = np.mean(np.abs(pv - gv))
+            if v_mae < best_val:
+                best_val = v_mae
+                best_state = {k:v.cpu().clone() for k,v in model.state_dict().items()}
+        scheduler.step()
+
+       # --- Predict test hand (raw model output) ---
+    pt, gt = predict(model, dl_te)
+
+    # ===== Linear calibration from TRAIN+VAL (subject-independent) =====
+    # Build a calibration set using train+val subjects, full range (70–100).
+    Xc_list, yc_list = [], []
+    for d in train_entries + [val_entry]:
+        Xc_list.append(d['X'])
+        yc_list.append(d['y'])
+    Xc = np.concatenate(Xc_list, axis=0)
+    yc = np.concatenate(yc_list, axis=0)
+
+    # Run the SAME normalization path as training for calibration windows
+    pc = predict_numpy_windows_mc(model, Xc, batch_size=BATCH_SIZE)  # predictions on train+val windows
+
+    # Fit y ≈ a * p + b (robust-ish by trimming extremes)
+    msk = np.isfinite(pc) & np.isfinite(yc) & (yc >= 70) & (yc <= 100)
+    pc_fit = pc[msk]; yc_fit = yc[msk]
+    if pc_fit.size >= 100:  # need enough points for stability
+        # Optional: trim 1% tails to reduce outlier influence
+        lo, hi = np.percentile(pc_fit, [1, 99])
+        keep = (pc_fit >= lo) & (pc_fit <= hi)
+        a, b = np.polyfit(pc_fit[keep], yc_fit[keep], 1)  # slope, intercept
+        # Apply linear calibration to test predictions
+        pt = a * pt + b
+    # else: if too few points, skip calibration (rare)
+
+    # (Optional) clamp to physiological range
+    pt = np.clip(pt, 70, 100)
+
+    # Store & report
+    all_preds[(t_pid, t_hand)] = dict(gt=gt, pred=pt, idx=idx_te)
+
+    mae, arms, r2, mu, lo, hi = metrics(gt, pt)
+    print(f"[LOOCV {fold:02d}/12] Subject {t_pid+1} {'L' if t_hand==0 else 'R'} -> "
+          f"MAE={mae:.2f} ARMS={arms:.2f} R2={r2:.2f} mu={mu:.2f} LOA=[{lo:.2f},{hi:.2f}]")
+    results_table.append([t_pid+1, "L" if t_hand==0 else "R", mae, arms, r2, mu, lo, hi])
+
+
+# Save raw per-hand metrics
+pd.DataFrame(results_table, columns=["Subject","Hand","MAE","ARMS","R2","mu","LOA_low","LOA_high"])\
+  .to_csv(os.path.join(OUTDIR,"loocv_per_hand_raw_metrics.csv"), index=False)
+
+# ---- Fig. 2 — paper-style table (desaturation only; pick 1 hand / subject) ----
+paper_rows = []
+for subj in range(6):
+    candidates=[]
+    for hand in [0,1]:
+        gt = all_preds[(subj, hand)]['gt']
+        pr = all_preds[(subj, hand)]['pred']
+        sel = gt < 94
+        if sel.sum() < 10: 
+            continue
+        mae, arms, r2, mu, lo, hi = metrics(gt[sel], pr[sel])
+        candidates.append((mae, arms, r2, mu, lo, hi, hand))
+    if not candidates: 
+        continue
+    # choose the hypoxemia test hand (often the harder one)
+    mae, arms, r2, mu, lo, hi, hand = max(candidates, key=lambda x:x[0])
+    paper_rows.append([subj+1, "L" if hand==0 else "R", mae, arms, r2, mu, lo, hi])
+
+df_fig2 = pd.DataFrame(paper_rows, columns=["Subject","Hand","MAE","ARMS","R2","mu","LOA_low","LOA_high"])
+df_fig2.to_csv(os.path.join(OUTDIR,"fig2_paper_style_metrics.csv"), index=False)
+print("\n=== Fig. 2 — paper-style metrics (SpO₂<94%, one hand per subject) ===")
+print(df_fig2)
+print("Saved:", os.path.join(OUTDIR,"fig2_paper_style_metrics.csv"))
+
+# ---- Per-hand panels (Regression / BA / Time) ----
+def _plot_reg(ax, y, p):
+    ax.scatter(y, p, s=8, alpha=0.6)
+    a=max(70,min(y.min(),p.min())); b=min(100,max(y.max(),p.max()))
+    ax.plot([a,b],[a,b],'--',lw=1)
+    ax.set_xlim(a,b); ax.set_ylim(a,b)
+    ax.set_xlabel("GT SpO₂"); ax.set_ylabel("Pred")
+
+def _plot_ba(ax, y, p):
+    m=(y+p)/2; d=p-y; mu=d.mean(); sd=d.std()
+    ax.scatter(m, d, s=8, alpha=0.6)
+    ax.axhline(mu, lw=1); ax.axhline(mu+1.96*sd, ls='--', lw=1); ax.axhline(mu-1.96*sd, ls='--', lw=1)
+    ax.set_xlabel("Mean SpO₂"); ax.set_ylabel("Pred − GT")
+
+def _plot_time(ax, y, p):
+    ax.plot(y, lw=1, label="GT"); ax.plot(p, lw=1, label="Pred")
+    ax.set_ylim(70,100); ax.set_xlabel("Sample (s)"); ax.set_ylabel("SpO₂"); ax.legend(fontsize=8)
+
+for (pid, hand), D in all_preds.items():
+    y = D['gt']; p = D['pred']
+    f,axes=plt.subplots(1,3,figsize=(12,3.5))
+    _plot_reg(axes[0], y, p); axes[0].set_title(f"Reg S{pid+1}{'L' if hand==0 else 'R'}")
+    _plot_ba(axes[1], y, p);  axes[1].set_title("BA")
+    _plot_time(axes[2], y, p);axes[2].set_title("Time")
+    f.tight_layout()
+    f.savefig(os.path.join(OUTDIR,f"hand_panel_S{pid+1}{'L' if hand==0 else 'R'}.png"), dpi=200)
+    plt.close(f)
+
+# ---- Fig. 3 — classification & ROC (aggregate) ----
+all_y = np.concatenate([D['gt'] for D in all_preds.values()])
+all_p = np.concatenate([D['pred'] for D in all_preds.values()])
+rows = classify_summary(all_y, all_p, thresholds=[92,90,88])
+df_cls = pd.DataFrame([{"Threshold":r["threshold"],"Sensitivity":r["sensitivity"],
+                        "Specificity":r["specificity"],"AUC":r["auc"]} for r in rows])
+df_cls.to_csv(os.path.join(OUTDIR,"fig3_classification_summary.csv"), index=False)
+print("\n=== Fig. 3 — classification summary ===")
+print(df_cls)
+
+fig, ax = plt.subplots(figsize=(5,5))
+for r in rows:
+    ax.plot(r["fpr"], r["tpr"], label=f"{r['threshold']}% (AUC={r['auc']:.2f})")
+ax.plot([0,1],[0,1],'--',lw=1)
+ax.set_xlabel("1 − Specificity (FPR)"); ax.set_ylabel("Sensitivity (TPR)")
+ax.set_title("SpO₂ Classification ROC"); ax.legend()
+fig.tight_layout(); fig.savefig(os.path.join(OUTDIR,"fig3_roc.png"), dpi=200); plt.close(fig)
+
+# ---- Subject 7 prediction (train on all 12 hands, hypoxemia only) ----
+X_all = np.concatenate([d['X'] for d in hand_data], axis=0)
+y_all = np.concatenate([d['y'] for d in hand_data], axis=0)
+sel_all = y_all < 94
+ds_all = WindowDataset(X_all[sel_all], y_all[sel_all], instance_norm=True)
+dl_all = DataLoader(ds_all, batch_size=BATCH_SIZE, shuffle=True)
+
+model7 = PaperCNN().to(DEVICE)
+opt7 = torch.optim.Adam(model7.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+crit = nn.MSELoss()
+sch7  = torch.optim.lr_scheduler.MultiStepLR(opt7, milestones=[80], gamma=0.1)
+for ep in range(1, EPOCHS+1):
+    _ = train_one_epoch(model7, dl_all, opt7, crit)
+    sch7.step()
+
+def predict_subject7(pid, hand):
+    rgb, _ = extract_hand_series(pid, hand)
+    T_frames = rgb.shape[1]
+    T_gt = T_frames // FPS
+    Xs=[]; idx=[]
+    for s in range(T_gt):
+        c = s*FPS + FPS//2
+        st = c - WIN_FRAMES//2; en = st + WIN_FRAMES
+        if st<0 or en>T_frames: continue
+        w = rgb[:, st:en].astype(np.float32)
+        dc = w.mean(axis=1, keepdims=True); ac = w - dc
+        acdc = ac/(dc+1e-7)                                 # [3,90]
+        Xs.append(acdc[:,None,:]); idx.append(s)            # [3,1,90]
+    if not Xs: return np.array([]), []
+    Xs = np.stack(Xs, axis=0).astype(np.float32)           # [N,3,1,90]
+    # instance norm per window (per channel)
+    x = Xs[:,:,0,:]; mu = x.mean(axis=2, keepdims=True); sd = x.std(axis=2, keepdims=True)+1e-7
+    Xs[:,:,0,:] = (x - mu)/sd
+    model7.eval(); P=[]
+    with torch.no_grad():
+        for i in range(0, Xs.shape[0], BATCH_SIZE):
+            xb = torch.from_numpy(Xs[i:i+BATCH_SIZE]).to(DEVICE)
+            pb = model7(xb).cpu().numpy()
+            P.append(pb)
+    return (np.concatenate(P) if P else np.array([])), idx
+
+for pid,hand in subject7_hands():
+    preds, idx = predict_subject7(pid, hand)
+    pd.DataFrame({"sample_index_s": idx, "pred_spo2": preds}).to_csv(
+        os.path.join(OUTDIR, f"subject7_{'L' if hand==0 else 'R'}_predictions.csv"), index=False)
+
+print("\n✅ Done. Outputs saved to:", OUTDIR)
